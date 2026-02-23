@@ -1,0 +1,34 @@
+name: LLM-Gateway Health Check
+
+on:
+  schedule:
+    - cron: "* * * * *"
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check LLM-Gateway Health and Notify on Failure
+        run: |
+          success=false
+          for i in $(seq 1 5); do
+            response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health/API)
+            content=$(curl -s http://localhost:8000/health/API)
+
+            if [ "$response" -eq 200 ] && echo "$content" | grep -q "ok"; then
+              echo "LLM-Gateway is healthy (Attempt $i)."
+              success=true
+              break
+            else
+              echo "LLM-Gateway health check failed (Attempt $i). HTTP Status: $response, Content: $content"
+              if [ $i -lt 5 ]; then
+                sleep 10
+              fi
+            fi
+          done
+
+          if [ "$success" = "false" ]; then
+            echo "LLM-Gateway health check failed after 5 attempts. Sending notification to Mattermost."
+            curl -i -X POST -H 'Content-Type: application/json' -d '{"text": "## 🚨 LLM-Gateway 상태 확인 실패\n**엔드포인트:** `http://localhost:8000/health/API`\n\nAPI가 5번의 시도에 응답하지 않습니다. 확인이 필요합니다."}' ${{ secrets.MATTERMOST_WEBHOOK }}
+            exit 1
+          fi

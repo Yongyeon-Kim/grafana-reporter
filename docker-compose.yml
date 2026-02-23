@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  reporter:
+    build: .
+    container_name: grafana_reporter
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs

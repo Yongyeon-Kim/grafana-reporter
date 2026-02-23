@@ -1,0 +1,57 @@
+# .gitea/workflows/main.yml
+name: Run Report Table
+on:
+  schedule:
+    - cron: "0 16 * * *" # "0 15 * * *"
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fix line endings and permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i 's/\r$//' run_table.sh
+          chmod +x run_table.sh
+          echo "[OK] Prepared run_table.sh"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        shell: bash
+        env:
+          # Grafana & Mattermost
+          GRAFANA_URL: ${{ vars.GRAFANA_URL }}
+          GRAFANA_API_KEY: ${{ secrets.GRAFANA_API_KEY }}
+          MATTERMOST_WEBHOOK: ${{ vars.MATTERMOST_WEBHOOK }}
+          GRAFANA_DASHBOARD_UID: ${{ vars.GRAFANA_DASHBOARD_UID }}
+          # Email
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          SMTP_USER: ${{ vars.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_RECIPIENTS: ${{ vars.EMAIL_RECIPIENTS }}
+        run: |
+          set -euo pipefail
+          if [ "$(TZ=Asia/Seoul date +%u)" -eq 1 ]; then
+            bash ./run_table.sh 7d
+          else
+            bash ./run_table.sh 24h
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: report-logs
+          path: logs/table/*.log
+          if-no-files-found: ignore
