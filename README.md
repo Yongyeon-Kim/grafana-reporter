@@ -8,17 +8,18 @@ Grafana, Prometheus, Loki 등에서 수집된 데이터를 기반으로 주기�
 - **자동 리포트 생성**: 지정된 Grafana 대시보드의 패널 쿼리를 실행하여 데이터를 요약하고 리포트를 생성합니다.
 - **다양한 출력 형식**: 텍스트(Text) 및 테이블(Table) 형식의 리포트를 지원합니다.
 - **Mattermost/이메일 통합**: 생성된 리포트를 Mattermost 웹훅 또는 SMTP 이메일로 자동 전송합니다.
-- **API 상태 확인**: Gitea 워크플로우를 통해 주기적으로 API 상태를 확인하고 장애 발생 시 Mattermost로 알림을 전송합니다.
+- **API 상태 확인**: GitHub Actions를 통해 LLM/OCR API 상태를 주기적으로 확인하고 장애 발생 시 Mattermost로 알림을 전송합니다.
 - **유연한 설정**: `.env` 파일을 통해 Grafana URL, API 키, 대시보드 UID 등의 설정을 쉽게 변경할 수 있습니다.
 
 ## 프로젝트 구조
 
 ```
 .
-├── .gitea/
+├── .github/
 │   └── workflows/
-│       ├── main.yml           # 주기적으로 테이블 리포트를 생성하는 Gitea 워크플로우
-│       └── health_check.yml   # API 상태를 주기적으로 확인하는 Gitea 워크플로우
+│       ├── main.yml               # 테이블 리포트 생성
+│       ├── api_health_check.yml   # LLM-Gateway 상태 확인
+│       └── ocr_health_check.yml   # OCR-Gateway 상태 확인
 ├── src/
 │   ├── clients/      # Grafana, Loki, Prometheus API 클라이언트
 │   ├── services/     # 리포트 생성, 데이터 요약 등 핵심 비즈니스 로직
@@ -34,39 +35,46 @@ Grafana, Prometheus, Loki 등에서 수집된 데이터를 기반으로 주기�
 
 ## 자동화 워크플로우
 
-### 테이블 리포트 생성 (`.gitea/workflows/main.yml`)
+자동화는 `.github/workflows/`의 GitHub Actions 워크플로우로 실행합니다.
 
-- **목적**: 스케줄에 따라 자동으로 테이블 형식의 리포트를 생성하고 Mattermost/이메일로 전송합니다.
-- **동작**:
-    - 매일 15:00 UTC (`cron: '0 15 * * *'`)에 자동으로 실행됩니다.
-    - 월요일에는 지난 7일간의 데이터를 요약(`run_table.sh 7d`), 그 외 요일에는 지난 24시간의 데이터를 요약(`run_table.sh 24h`)하여 리포트를 생성합니다.
-    - 실행 로그는 `report-logs`라는 이름의 아티팩트로 저장되어 워크플로우 실행 결과에서 다운로드할 수 있습니다.
-- **필수 설정**:
-    - Gitea 저장소의 `Settings > Secrets` 및 `Settings > Actions`에 다음 변수들이 등록되어 있어야 합니다.
-        - `GRAFANA_URL`
-        - `GRAFANA_API_KEY` (Secret)
-        - `MATTERMOST_WEBHOOK`
-        - `GRAFANA_DASHBOARD_UID`
-- **이메일 전송(선택)**:
-    - 이메일 전송을 사용하려면 아래 설정을 추가합니다.
-        - `SMTP_HOST`
-        - `SMTP_PORT` (기본값: `587`)
-        - `SMTP_USER`
-        - `SMTP_PASSWORD` (Secret)
-        - `EMAIL_RECIPIENTS` (쉼표 구분, 예: `devops@example.com,sre@example.com`)
-    - `SMTP_HOST` 또는 `EMAIL_RECIPIENTS`가 없으면 이메일 전송은 자동으로 건너뜁니다.
+### 테이블 리포트 생성 (`.github/workflows/main.yml`)
 
-### API 상태 확인 (`.gitea/workflows/health_check.yml`)
+- **실행 시각**: 매일 16:00 UTC, 한국시간 다음 날 01:00 (`cron: '0 16 * * *'`).
+- **집계 기간**: 한국시간 기준 월요일에는 지난 7일(`run_table.sh 7d`), 그 외 요일에는 지난 24시간(`run_table.sh 24h`)을 요약합니다.
+- **실행 환경**: `ubuntu-latest`에서 Python 의존성을 설치하고 `run_table.sh`를 실행합니다.
+- **결과**: Mattermost/이메일로 리포트를 전송하며, `logs/table/*.log`는 `report-logs` 아티팩트로 업로드합니다(`actions/upload-artifact@v4`).
 
-- **목적**: 특정 API 엔드포인트(`http://localhost:8000/health/API`)가 정상적으로 작동하는지 주기적으로 확인합니다.
-- **동작**:
-    - 1분마다 (`cron: '* * * * *'`) 스케줄에 따라 자동으로 실행됩니다.
-    - `curl` 명령을 통해 API에 HTTP 요청을 보냅니다.
-    - 응답이 `200 OK`가 아니거나 응답 내용에 "ok"가 포함되지 않으면 실패로 간주합니다.
-    - 실패 시 10초 간격으로 최대 5번까지 재시도합니다.
-    - 5번 연속 실패하면 Mattermost로 장애 알림 메시지를 전송합니다.
-- **필수 설정**:
-    - Gitea 저장소의 `Settings > Secrets`에 `MATTERMOST_WEBHOOK`이라는 이름으로 Mattermost 웹훅 URL이 등록되어 있어야 합니다.
+### LLM/OCR API 상태 확인
+
+| 워크플로우 | 확인 대상 |
+| :--- | :--- |
+| `.github/workflows/api_health_check.yml` | LLM-Gateway: `http://localhost:8000/health/API` |
+| `.github/workflows/ocr_health_check.yml` | OCR-Gateway: `http://localhost:8001/health/API` |
+
+- 두 워크플로우 모두 `cron: '* * * * *'`로 설정되어 있습니다. 단, [GitHub Actions의 예약 실행 최소 간격은 5분](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onschedule)이므로 1분 주기 실행은 보장되지 않습니다.
+- HTTP 상태가 `200`이고 응답 본문에 `ok`가 포함되면 정상으로 판단합니다.
+- 실패 시 10초 간격으로 최대 5번 시도하고, 모두 실패하면 Mattermost로 알림을 보낸 뒤 작업을 실패 처리합니다.
+- 현재 `runs-on: ubuntu-latest`이므로 `localhost`는 GitHub에서 제공하는 실행 서버 자체를 가리킵니다. 별도 서버의 API를 확인하려면 해당 서버에 접근 가능한 URL로 두 워크플로우의 요청 주소와 알림 문구를 수정해야 합니다. API가 설치된 서버에서 실행하려면 self-hosted runner 구성과 `runs-on` 변경이 필요합니다.
+
+### GitHub Actions 설정
+
+GitHub 저장소의 **Settings → Secrets and variables → Actions**에서 설정합니다. 워크플로우가 참조하는 위치에 맞게 **Variables**와 **Secrets**를 구분해 등록하세요.
+
+| 이름 | 리포트 워크플로우 | 헬스체크 워크플로우 | 용도 |
+| :--- | :--- | :--- | :--- |
+| `GRAFANA_URL` | Variable | — | Grafana URL |
+| `GRAFANA_API_KEY` | Secret | — | Grafana API 키 |
+| `GRAFANA_DASHBOARD_UID` | Variable | — | 리포트 대상 대시보드 UID |
+| `MATTERMOST_WEBHOOK` | Variable | Secret | Mattermost 웹훅 URL |
+| `SMTP_HOST` | Variable | — | SMTP 서버 주소(이메일 사용 시) |
+| `SMTP_PORT` | Variable | — | SMTP 포트(미설정 시 `587`) |
+| `SMTP_USER` | Variable | — | SMTP 인증 사용자(선택) |
+| `SMTP_PASSWORD` | Secret | — | SMTP 인증 비밀번호(필요 시) |
+| `EMAIL_RECIPIENTS` | Variable | — | 수신자 목록(쉼표로 구분) |
+
+현재 리포트 워크플로우는 `vars.MATTERMOST_WEBHOOK`, 헬스체크 워크플로우는 `secrets.MATTERMOST_WEBHOOK`을 사용하므로 두 기능을 모두 사용하려면 같은 이름으로 Variable과 Secret을 각각 등록해야 합니다.
+
+`SMTP_HOST` 또는 `EMAIL_RECIPIENTS`가 없으면 이메일 전송은 건너뜁니다. 로컬 Docker 실행용 `.env` 설정은 GitHub Actions에 자동으로 적용되지 않습니다.
 
 ## 시작하기
 
@@ -79,8 +87,8 @@ Grafana, Prometheus, Loki 등에서 수집된 데이터를 기반으로 주기�
 
 1.  **저장소 복제**
     ```bash
-    git clone <repository_url>
-    cd grafana_alerts
+    git clone https://github.com/Yongyeon-Kim/grafana-reporter.git
+    cd grafana-reporter
     ```
 
 2.  **환경 변수 설정**
@@ -114,7 +122,7 @@ Grafana, Prometheus, Loki 등에서 수집된 데이터를 기반으로 주기�
 
 -   **테이블 형식 리포트 생성**
     ```bash
-    docker-compose run --rm reporter ./run_table.sh
+    docker compose run --rm reporter ./run_table.sh
     ```
 
 `--rm` 플래그는 스크립트 실행 후 컨테이너를 자동으로 삭제하는 역할을 합니다.
